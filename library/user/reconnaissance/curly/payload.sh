@@ -2,7 +2,7 @@
 # Title: Curly - Web Recon & Vuln Scanner
 # Description: Curl-based web reconnaissance and vulnerability testing for pentesting and bug bounty hunting
 # Author: curtthecoder
-# Version: 1.0
+# Version: 3.0
 
 # === CONFIG ===
 LOOTDIR=/root/loot/curly
