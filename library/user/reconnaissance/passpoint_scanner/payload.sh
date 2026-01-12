@@ -824,6 +824,8 @@ setup_wpa_supplicant() {
 ctrl_interface=/tmp/passpoint_wpa
 interworking=1
 hs20=1
+bss_expiration_age=300
+bss_expiration_scan_count=10
 EOF
 
     # Kill any existing wpa_supplicant using our ctrl_interface and clean it
@@ -867,11 +869,13 @@ cleanup_wpa_supplicant() {
 
 # Query ANQP data from a specific BSSID
 # $4 is optional result_bssid for MBSSID networks (store results under non-tx BSSID)
+# $5 is optional channel for targeted rescanning
 query_anqp() {
     local iface=$1
     local bssid=$2
     local ssid=$3
     local result_bssid=${4:-$bssid}  # Use query BSSID if result BSSID not provided
+    local channel=${5:-0}
     local outfile="$TEMP_DIR/anqp_${bssid//:/}.txt"
 
     # ANQP Element IDs to query:
@@ -892,15 +896,43 @@ query_anqp() {
 
     LOG "  Querying ANQP from $bssid..."
 
+    # Convert channel to frequency for targeted scanning
+    channel_to_freq() {
+        local ch=$1
+        if [ "$ch" -ge 1 ] && [ "$ch" -le 14 ]; then
+            # 2.4GHz
+            if [ "$ch" -eq 14 ]; then echo 2484; else echo $((2407 + ch * 5)); fi
+        elif [ "$ch" -ge 36 ] && [ "$ch" -le 177 ]; then
+            # 5GHz
+            echo $((5000 + ch * 5))
+        elif [ "$ch" -ge 1 ] && [ "$ch" -le 233 ]; then
+            # 6GHz (simplified)
+            echo $((5950 + ch * 5))
+        else
+            echo 0
+        fi
+    }
+
     # Check if BSS is in cache (should be from the full scan done earlier)
     if ! wpa_cli -p "$WPA_CTRL_IFACE" -i "$iface" bss "$bssid" 2>/dev/null | grep -q "bssid"; then
-        # BSS not in cache - need to rescan DFS channels and wpa_supplicant
-        LOG "  BSS not in cache, rescanning..."
-        local dfs_freqs="5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5720"
-        iw dev "$iface" scan freq $dfs_freqs passive >/dev/null 2>&1
-        sleep 2
-        wpa_cli -p "$WPA_CTRL_IFACE" -i "$iface" scan >/dev/null 2>&1
-        sleep 6
+        # BSS not in cache - do targeted rescan on the AP's channel
+        LOG "  BSS not in cache, rescanning ch $channel..."
+
+        local freq=$(channel_to_freq "$channel")
+        if [ "$freq" -gt 0 ]; then
+            # Targeted scan on specific frequency
+            iw dev "$iface" scan freq "$freq" passive >/dev/null 2>&1
+            sleep 2
+            wpa_cli -p "$WPA_CTRL_IFACE" -i "$iface" scan freq="$freq" >/dev/null 2>&1
+        else
+            # Fallback: scan all DFS frequencies
+            local dfs_freqs="5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5720"
+            iw dev "$iface" scan freq $dfs_freqs passive >/dev/null 2>&1
+            sleep 2
+            wpa_cli -p "$WPA_CTRL_IFACE" -i "$iface" scan >/dev/null 2>&1
+        fi
+        sleep 4
+
         # Check again after rescan
         if ! wpa_cli -p "$WPA_CTRL_IFACE" -i "$iface" bss "$bssid" 2>/dev/null | grep -q "bssid"; then
             LOG "  BSS still not found, skipping"
@@ -1765,7 +1797,7 @@ phase_1c_anqp_query() {
         else
             LOG "  BSSID: $bssid | Channel: $channel"
             SPINNER ON
-            query_anqp "$mgmt_iface" "$query_bssid" "$ssid" "$bssid"
+            query_anqp "$mgmt_iface" "$query_bssid" "$ssid" "$bssid" "$channel"
             SPINNER OFF
         fi
 
